@@ -21,7 +21,7 @@ const ai = new GoogleGenAI({
 });
 
 function collectSources(response: GenerateContentResponse): MapsSource[] {
-  const sources =
+  const sourceCandidates =
     response.candidates?.flatMap((candidate) =>
       (candidate.groundingMetadata?.groundingChunks ?? []).flatMap((chunk) => {
         const maps = chunk.maps;
@@ -33,21 +33,38 @@ function collectSources(response: GenerateContentResponse): MapsSource[] {
         return [
           {
             title: maps.title?.trim() || 'Google Maps 地點',
-            uri: maps.uri
+            uri: maps.uri,
+            placeId: maps.placeId
           }
         ];
       })
     ) ?? [];
 
-  const uniqueSources = new Map<string, MapsSource>();
+  const uniqueSources = new Map<string, MapsSource & { isReview: boolean }>();
 
-  sources.forEach((source) => {
-    if (!uniqueSources.has(source.uri)) {
-      uniqueSources.set(source.uri, source);
+  sourceCandidates.forEach((source) => {
+    const isReview = /^Review of /iu.test(source.title);
+    const title = source.title
+      .replace(/^Review of /iu, '')
+      .replace(/ - Google Maps$/iu, '')
+      .trim();
+    const key =
+      source.placeId || title.toLocaleLowerCase('en-US') || source.uri;
+    const existing = uniqueSources.get(key);
+
+    if (!existing || (existing.isReview && !isReview)) {
+      uniqueSources.set(key, {
+        title: title || 'Google Maps 地點',
+        uri: source.uri,
+        isReview
+      });
     }
   });
 
-  return Array.from(uniqueSources.values()).slice(0, 5);
+  return Array.from(uniqueSources.values(), ({ title, uri }) => ({ title, uri })).slice(
+    0,
+    5
+  );
 }
 
 function cleanSummary(text: string): string {

@@ -114,9 +114,12 @@ gcloud run deploy line-map-grounding \
   --source . \
   --region asia-east1 \
   --allow-unauthenticated \
+  --no-cpu-throttling \
   --service-account line-map-grounding@line-zona.iam.gserviceaccount.com \
   --env-vars-file cloud-run-env.yaml
 ```
+
+Webhook 會先回覆 LINE `200`，再完成 Vertex AI 查詢與 LINE reply。`--no-cpu-throttling` 可確保 HTTP response 結束後背景處理仍有 CPU；服務未設定 minimum instances，因此閒置時仍可縮到 0。
 
 取得網址後驗證：
 

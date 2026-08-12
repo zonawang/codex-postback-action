@@ -15,14 +15,16 @@ test('collectSources deduplicates Google Maps URLs', () => {
           groundingChunks: [
             {
               maps: {
-                title: 'Cafe A',
-                uri: 'https://maps.google.com/example-a'
+                title: 'Review of Cafe A - Google Maps',
+                uri: 'https://maps.google.com/review-a',
+                placeId: 'places/cafe-a'
               }
             },
             {
               maps: {
-                title: 'Cafe A duplicate',
-                uri: 'https://maps.google.com/example-a'
+                title: 'Cafe A - Google Maps',
+                uri: 'https://maps.google.com/place-a',
+                placeId: 'places/cafe-a'
               }
             },
             {
@@ -39,7 +41,7 @@ test('collectSources deduplicates Google Maps URLs', () => {
   assert.deepEqual(geminiMapsInternals.collectSources(response), [
     {
       title: 'Cafe A',
-      uri: 'https://maps.google.com/example-a'
+      uri: 'https://maps.google.com/place-a'
     }
   ]);
 });
