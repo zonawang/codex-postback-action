@@ -1,0 +1,8 @@
+node_modules
+dist
+.env
+.git
+.gitignore
+cloud-run-env.yaml
+npm-debug.log
+
