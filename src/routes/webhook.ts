@@ -11,8 +11,6 @@ router.post(
   '/',
   middleware({ channelSecret: env.LINE_CHANNEL_SECRET }),
   async (req: Request<unknown, unknown, WebhookRequestBody>, res: Response) => {
-    res.sendStatus(200);
-
     const results = await Promise.allSettled(
       req.body.events.map(handleWebhookEvent)
     );
@@ -27,8 +25,9 @@ router.post(
         });
       }
     });
+
+    res.sendStatus(200);
   }
 );
 
 export default router;
-

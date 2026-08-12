@@ -12,7 +12,28 @@ async function reply(replyToken: string, messages: messagingApi.Message[]) {
   await lineClient.replyMessage({ replyToken, messages });
 }
 
+function getTargetId(event: WebhookEvent): string | undefined {
+  if (event.source.type === 'user') {
+    return event.source.userId;
+  }
+
+  if (event.source.type === 'group') {
+    return event.source.groupId;
+  }
+
+  if (event.source.type === 'room') {
+    return event.source.roomId;
+  }
+
+  return undefined;
+}
+
 export async function handleWebhookEvent(event: WebhookEvent): Promise<void> {
+  logger.info('Webhook event received', {
+    eventType: event.type,
+    webhookEventId: event.webhookEventId
+  });
+
   if (event.type !== 'message') {
     return;
   }
@@ -26,21 +47,53 @@ export async function handleWebhookEvent(event: WebhookEvent): Promise<void> {
     return;
   }
 
+  const startedAt = Date.now();
+  const targetId = getTargetId(event);
+
+  if (targetId) {
+    try {
+      await lineClient.showLoadingAnimation({
+        chatId: targetId,
+        loadingSeconds: 60
+      });
+    } catch (error) {
+      logger.error('Loading animation failed', {
+        error: error instanceof Error ? error.message : String(error)
+      });
+    }
+  }
+
+  logger.info('Cafe search started', {
+    webhookEventId: event.webhookEventId
+  });
+
   try {
     const result = await findNearbyCafes(
       event.message.latitude,
       event.message.longitude
     );
 
-    await reply(event.replyToken, createCafeResultMessages(result));
+    const messages = createCafeResultMessages(result);
+
+    if (targetId) {
+      await lineClient.pushMessage({ to: targetId, messages });
+    } else {
+      await reply(event.replyToken, messages);
+    }
+
+    logger.info('Cafe search reply sent', {
+      webhookEventId: event.webhookEventId,
+      sourceCount: result.sources.length,
+      elapsedMs: Date.now() - startedAt
+    });
   } catch (error) {
     logger.error('Cafe search failed', {
       error: error instanceof Error ? error.message : String(error),
-      latitude: event.message.latitude,
-      longitude: event.message.longitude
+      webhookEventId: event.webhookEventId,
+      elapsedMs: Date.now() - startedAt
     });
 
-    await reply(event.replyToken, [
+    const messages: messagingApi.Message[] = [
       {
         type: 'text',
         text: '目前無法取得附近咖啡廳，請稍後再傳一次位置。',
@@ -56,7 +109,12 @@ export async function handleWebhookEvent(event: WebhookEvent): Promise<void> {
           ]
         }
       }
-    ]);
+    ];
+
+    if (targetId) {
+      await lineClient.pushMessage({ to: targetId, messages });
+    } else {
+      await reply(event.replyToken, messages);
+    }
   }
 }
-
