@@ -24,9 +24,10 @@ export const env = {
   PORT: port(),
   LINE_CHANNEL_SECRET: required('LINE_CHANNEL_SECRET'),
   LINE_CHANNEL_ACCESS_TOKEN: required('LINE_CHANNEL_ACCESS_TOKEN'),
-  GEMINI_API_KEY: required('GEMINI_API_KEY'),
+  GOOGLE_CLOUD_PROJECT: required('GOOGLE_CLOUD_PROJECT'),
+  GOOGLE_CLOUD_LOCATION:
+    process.env.GOOGLE_CLOUD_LOCATION?.trim() || 'global',
   GEMINI_MAPS_MODEL: process.env.GEMINI_MAPS_MODEL?.trim() || 'gemini-2.5-flash',
   GEMINI_TRANSLATION_MODEL:
     process.env.GEMINI_TRANSLATION_MODEL?.trim() || 'gemini-2.5-flash'
 };
-

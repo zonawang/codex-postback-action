@@ -1,4 +1,4 @@
-import { GoogleGenAI } from '@google/genai';
+import { GoogleGenAI, type GenerateContentResponse } from '@google/genai';
 
 import { env } from '../utils/env.js';
 import { logger } from '../utils/logger.js';
@@ -13,98 +13,31 @@ export type CafeSearchResult = {
   sources: MapsSource[];
 };
 
-type UnknownRecord = Record<string, unknown>;
+const ai = new GoogleGenAI({
+  enterprise: true,
+  project: env.GOOGLE_CLOUD_PROJECT,
+  location: env.GOOGLE_CLOUD_LOCATION,
+  apiVersion: 'v1'
+});
 
-const ai = new GoogleGenAI({ apiKey: env.GEMINI_API_KEY });
+function collectSources(response: GenerateContentResponse): MapsSource[] {
+  const sources =
+    response.candidates?.flatMap((candidate) =>
+      (candidate.groundingMetadata?.groundingChunks ?? []).flatMap((chunk) => {
+        const maps = chunk.maps;
 
-function asRecord(value: unknown): UnknownRecord | undefined {
-  return typeof value === 'object' && value !== null
-    ? (value as UnknownRecord)
-    : undefined;
-}
+        if (!maps?.uri || !/^https:\/\//u.test(maps.uri)) {
+          return [];
+        }
 
-function firstString(record: UnknownRecord, keys: string[]): string | undefined {
-  for (const key of keys) {
-    const value = record[key];
-
-    if (typeof value === 'string' && value.trim()) {
-      return value.trim();
-    }
-  }
-
-  return undefined;
-}
-
-function collectText(value: unknown): string[] {
-  if (typeof value === 'string') {
-    return [value];
-  }
-
-  if (Array.isArray(value)) {
-    return value.flatMap(collectText);
-  }
-
-  const record = asRecord(value);
-
-  if (!record) {
-    return [];
-  }
-
-  const directText = firstString(record, ['text', 'outputText', 'output_text']);
-  const nested = Object.entries(record)
-    .filter(
-      ([key]) =>
-        ![
-          'text',
-          'outputText',
-          'output_text',
-          'annotations',
-          'type',
-          'role',
-          'status',
-          'id',
-          'model'
-        ].includes(key)
-    )
-    .flatMap(([, child]) => collectText(child));
-
-  return directText ? [directText, ...nested] : nested;
-}
-
-function collectSources(value: unknown): MapsSource[] {
-  const sources: MapsSource[] = [];
-
-  function visit(node: unknown) {
-    if (Array.isArray(node)) {
-      node.forEach(visit);
-      return;
-    }
-
-    const record = asRecord(node);
-
-    if (!record) {
-      return;
-    }
-
-    const sourceRecord =
-      asRecord(record.source) ??
-      asRecord(record.googleMaps) ??
-      asRecord(record.google_maps) ??
-      record;
-    const uri = firstString(sourceRecord, ['uri', 'url']);
-    const title = firstString(sourceRecord, ['title', 'name']);
-
-    if (uri && /^https:\/\//u.test(uri)) {
-      sources.push({
-        title: title || 'Google Maps 地點',
-        uri
-      });
-    }
-
-    Object.values(record).forEach(visit);
-  }
-
-  visit(value);
+        return [
+          {
+            title: maps.title?.trim() || 'Google Maps 地點',
+            uri: maps.uri
+          }
+        ];
+      })
+    ) ?? [];
 
   const uniqueSources = new Map<string, MapsSource>();
 
@@ -147,26 +80,28 @@ export async function findNearbyCafes(
   latitude: number,
   longitude: number
 ): Promise<CafeSearchResult> {
-  const interaction = await ai.interactions.create({
+  const response = await ai.models.generateContent({
     model: env.GEMINI_MAPS_MODEL,
-    input: [
+    contents: [
       'Find 3 to 5 good cafes near the supplied user location.',
       'Prioritize places that are practical for sitting down with a laptop.',
       'For each recommendation, state the exact place name, why it is a good choice, and any useful factual details available from Google Maps.',
       'Do not invent outlet, Wi-Fi, time-limit, or noise information when it is unavailable.',
       'Keep the full answer concise and respond in English.'
     ].join(' '),
-    tools: [
-      {
-        type: 'google_maps',
-        latitude,
-        longitude
+    config: {
+      tools: [{ googleMaps: {} }],
+      toolConfig: {
+        retrievalConfig: {
+          latLng: { latitude, longitude },
+          languageCode: 'en_US'
+        }
       }
-    ]
+    }
   });
 
-  const rawText = cleanSummary(collectText(interaction).join('\n'));
-  const sources = collectSources(interaction);
+  const rawText = cleanSummary(response.text || '');
+  const sources = collectSources(response);
 
   if (!rawText) {
     throw new Error('Gemini Maps returned no recommendation text');
@@ -183,6 +118,5 @@ export async function findNearbyCafes(
 }
 
 export const geminiMapsInternals = {
-  collectSources,
-  collectText
+  collectSources
 };
