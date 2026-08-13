@@ -37,3 +37,15 @@
 - Cloud Run runtime service account
 - Webhook 200 但背景 Promise 沒有可靠完成
 - Loading Animation、Push Message 與 Cloud Logging
+
+## 專題篇：Loading Animation 與長時間任務
+
+👉 [`medium-loading-animation.md`](./medium-loading-animation.md)
+
+**LINE Bot 查地圖要等 30 秒，怎麼讓使用者不焦慮？我用 Codex 加上 Loading Animation 與 Push Message**
+
+- 為什麼「沒有反應」比「慢」更糟
+- `showLoadingAnimation` 與不同聊天室 target ID
+- 動畫失敗不影響主要搜尋
+- Webhook response lifecycle
+- Push Message、結構化 logs 與 webhook 重試
