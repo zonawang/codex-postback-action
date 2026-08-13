@@ -1,5 +1,6 @@
 import type { messagingApi } from '@line/bot-sdk';
 
+import { createCafePostbackData } from '../actions/cafePostbackActions.js';
 import type { CafeSearchResult } from '../services/geminiMaps.js';
 
 const LOCATION_QUICK_REPLY: messagingApi.QuickReply = {
@@ -81,7 +82,8 @@ function createSourceBubble(
 }
 
 export function createCafeResultMessages(
-  result: CafeSearchResult
+  result: CafeSearchResult,
+  sessionId?: string
 ): messagingApi.Message[] {
   const summary: messagingApi.TextMessage = {
     type: 'text',
@@ -94,9 +96,41 @@ export function createCafeResultMessages(
     contents: {
       type: 'carousel',
       contents: result.sources.map(createSourceBubble)
+    },
+    quickReply: {
+      items: [
+        ...(sessionId
+          ? [
+              {
+                type: 'action' as const,
+                action: {
+                  type: 'postback' as const,
+                  label: '換一批',
+                  data: createCafePostbackData('reroll', sessionId),
+                  displayText: '🔄 換一批咖啡廳'
+                }
+              },
+              {
+                type: 'action' as const,
+                action: {
+                  type: 'postback' as const,
+                  label: '更適合工作',
+                  data: createCafePostbackData('work_friendly', sessionId),
+                  displayText: '💻 找更適合工作的咖啡廳'
+                }
+              }
+            ]
+          : []),
+        {
+          type: 'action',
+          action: {
+            type: 'location',
+            label: '重新選位置'
+          }
+        }
+      ]
     }
   };
 
   return [summary, sourceCarousel];
 }
-

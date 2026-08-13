@@ -6,26 +6,13 @@ import {
 } from '../messages/cafeMessages.js';
 import { findNearbyCafes } from '../services/geminiMaps.js';
 import { lineClient } from '../services/lineClient.js';
+import { createSearchSession } from '../services/searchSessionStore.js';
+import { getActorId, getConversationId } from '../utils/lineEvent.js';
 import { logger } from '../utils/logger.js';
+import { handlePostbackEvent } from './postbackHandler.js';
 
 async function reply(replyToken: string, messages: messagingApi.Message[]) {
   await lineClient.replyMessage({ replyToken, messages });
-}
-
-function getTargetId(event: WebhookEvent): string | undefined {
-  if (event.source.type === 'user') {
-    return event.source.userId;
-  }
-
-  if (event.source.type === 'group') {
-    return event.source.groupId;
-  }
-
-  if (event.source.type === 'room') {
-    return event.source.roomId;
-  }
-
-  return undefined;
 }
 
 export async function handleWebhookEvent(event: WebhookEvent): Promise<void> {
@@ -33,6 +20,11 @@ export async function handleWebhookEvent(event: WebhookEvent): Promise<void> {
     eventType: event.type,
     webhookEventId: event.webhookEventId
   });
+
+  if (event.type === 'postback') {
+    await handlePostbackEvent(event);
+    return;
+  }
 
   if (event.type !== 'message') {
     return;
@@ -48,7 +40,8 @@ export async function handleWebhookEvent(event: WebhookEvent): Promise<void> {
   }
 
   const startedAt = Date.now();
-  const targetId = getTargetId(event);
+  const targetId = getConversationId(event.source);
+  const ownerId = getActorId(event.source);
 
   if (targetId) {
     try {
@@ -73,7 +66,26 @@ export async function handleWebhookEvent(event: WebhookEvent): Promise<void> {
       event.message.longitude
     );
 
-    const messages = createCafeResultMessages(result);
+    let sessionId: string | undefined;
+
+    if (targetId && ownerId) {
+      try {
+        const session = await createSearchSession({
+          ownerId,
+          conversationId: targetId,
+          latitude: event.message.latitude,
+          longitude: event.message.longitude,
+          previousCafeNames: result.sources.map((source) => source.title)
+        });
+        sessionId = session.id;
+      } catch (error) {
+        logger.error('Failed to create cafe search session', {
+          error: error instanceof Error ? error.message : String(error)
+        });
+      }
+    }
+
+    const messages = createCafeResultMessages(result, sessionId);
 
     if (targetId) {
       await lineClient.pushMessage({ to: targetId, messages });

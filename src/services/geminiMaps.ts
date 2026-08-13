@@ -2,6 +2,7 @@ import { GoogleGenAI, type GenerateContentResponse } from '@google/genai';
 
 import { env } from '../utils/env.js';
 import { logger } from '../utils/logger.js';
+import type { CafeSearchPreference } from './searchSessionStore.js';
 
 export type MapsSource = {
   title: string;
@@ -11,6 +12,11 @@ export type MapsSource = {
 export type CafeSearchResult = {
   summary: string;
   sources: MapsSource[];
+};
+
+export type CafeSearchOptions = {
+  preference?: CafeSearchPreference;
+  excludeNames?: string[];
 };
 
 const ai = new GoogleGenAI({
@@ -95,13 +101,23 @@ async function translateToTraditionalChinese(text: string): Promise<string> {
 
 export async function findNearbyCafes(
   latitude: number,
-  longitude: number
+  longitude: number,
+  options: CafeSearchOptions = {}
 ): Promise<CafeSearchResult> {
+  const preferenceInstruction =
+    options.preference === 'work_friendly'
+      ? 'Strongly prioritize cafes with explicit Google Maps evidence that they are practical for focused laptop work, while avoiding unsupported claims.'
+      : 'Prioritize places that are practical for sitting down with a laptop.';
+  const exclusionInstruction = options.excludeNames?.length
+    ? `Recommend different places from this previous batch when alternatives exist: ${options.excludeNames.join(', ')}.`
+    : '';
+
   const response = await ai.models.generateContent({
     model: env.GEMINI_MAPS_MODEL,
     contents: [
       'Find 3 to 5 good cafes near the supplied user location.',
-      'Prioritize places that are practical for sitting down with a laptop.',
+      preferenceInstruction,
+      exclusionInstruction,
       'For each recommendation, state the exact place name, why it is a good choice, and any useful factual details available from Google Maps.',
       'Do not invent outlet, Wi-Fi, time-limit, or noise information when it is unavailable.',
       'Keep the full answer concise and respond in English.'

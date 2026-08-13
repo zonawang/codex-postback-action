@@ -10,7 +10,7 @@ export function createApp() {
 
   app.get('/', (_req: Request, res: Response) => {
     res.status(200).json({
-      name: 'line-map-grounding',
+      name: 'codex-postback-action',
       status: 'ok',
       webhook: '/webhook'
     });
@@ -33,4 +33,3 @@ export function createApp() {
 }
 
 export const app = createApp();
-

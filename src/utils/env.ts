@@ -29,5 +29,7 @@ export const env = {
     process.env.GOOGLE_CLOUD_LOCATION?.trim() || 'global',
   GEMINI_MAPS_MODEL: process.env.GEMINI_MAPS_MODEL?.trim() || 'gemini-2.5-flash',
   GEMINI_TRANSLATION_MODEL:
-    process.env.GEMINI_TRANSLATION_MODEL?.trim() || 'gemini-2.5-flash'
+    process.env.GEMINI_TRANSLATION_MODEL?.trim() || 'gemini-2.5-flash',
+  FIRESTORE_SESSION_COLLECTION:
+    process.env.FIRESTORE_SESSION_COLLECTION?.trim() || 'cafe-search-sessions'
 };

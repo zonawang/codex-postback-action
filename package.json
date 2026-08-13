@@ -1,8 +1,8 @@
 {
-  "name": "line-map-grounding",
+  "name": "codex-postback-action",
   "version": "0.1.0",
   "private": true,
-  "description": "LINE bot that recommends nearby cafes using Gemini Google Maps grounding.",
+  "description": "LINE cafe bot with Gemini Maps grounding and stateful postback actions.",
   "type": "module",
   "main": "dist/server.js",
   "scripts": {
@@ -16,6 +16,7 @@
     "node": ">=20"
   },
   "dependencies": {
+    "@google-cloud/firestore": "^9.0.0",
     "@google/genai": "^2.0.0",
     "@line/bot-sdk": "^10.0.0",
     "dotenv": "^17.0.0",
