@@ -1,16 +1,16 @@
-# 用 Vertex AI Google Maps Grounding 找咖啡廳：從文件轉向、繁中轉譯到來源去重
+# 讓 LINE Bot 真的看懂附近有什麼：用 Vertex AI Google Maps Grounding 找咖啡廳
 
 上一篇，我和 Codex 從空 GitHub repo 建立了 LINE Bot 骨架，並用 Location Action 取得乾淨的 latitude 與 longitude。
 
-這一篇要進入真正的 AI 核心：
+這一篇終於要讓 Bot 開始「看地圖」了：
 
 > 如何把位置交給 Vertex AI Google Maps Grounding，產生有來源的咖啡廳推薦？
 
-這一段最有趣的地方，是我們中途根據文件改變了整個 API 入口，而且真實 response 又讓我們發現：**有 5 個來源，不代表有 5 間不同咖啡廳。**
+這一段比我原本想像中更曲折。我們做到一半才發現 API 入口應該換成 Vertex AI；真的拿到資料後又發現：**畫面上有 5 個來源，不代表真的有 5 間不同咖啡廳。**
 
 ---
 
-## 🧭 Codex 的第一個工作不是寫 Code，而是確認我們到底該用哪份文件
+## 🧭 寫 Code 之前，Codex 先幫我確認「到底走哪一條路」
 
 第一版原本參考 Gemini API Maps Grounding 文件，採用 API key 與 Interactions API。
 
@@ -18,7 +18,7 @@
 
 **要走 Vertex AI，不要使用 Gemini API key。**
 
-Codex 沒有只替換環境變數名稱，而是重新比對：
+這不是把 `API_KEY` 那一行刪掉就結束。Codex 重新比對了整條呼叫方式：
 
 - client 初始化方式
 - `interactions.create` 與 `models.generateContent` 的差異
@@ -36,13 +36,13 @@ retrievalConfig?: RetrievalConfig;
 groundingChunks?: GroundingChunk[];
 ```
 
-這次讓我很有感：Codex 不只是搜尋文件，它還會用本機實際安裝版本的型別再驗證一次。
+這次讓我很有感：Codex 不只看網頁文件，還會回頭檢查我電腦裡真正安裝的 SDK 版本。畢竟網頁可能是最新版，但專案裡的套件不一定完全一樣。
 
-文件告訴我們「概念怎麼用」，SDK declarations 則告訴我們「這個專案現在到底能怎麼寫」。
+用白話說，文件像使用說明書，TypeScript declarations 則像手上這台機器真正有哪些按鈕。兩邊都對上，寫下去才安心。
 
 ---
 
-## 🗺️ 從 API Key 改成 Vertex AI 身分
+## 🗺️ 不帶 API Key，改拿 Google Cloud 的工作證
 
 最後 client 改成：
 
@@ -75,13 +75,13 @@ Codex 同步修改了：
 - Cloud Run service account 部署方式
 - 單元測試中的測試環境
 
-這就是整合型修改和單點改 code 的差別。
+這就是整合型修改和只改一小段 code 的差別。
 
-如果只改 client，其他文件與部署設定仍然叫人放 API key，下一個使用者一定會混亂。
+如果只改 client，README 還在叫人填 API key，下一次連我自己都可能被搞混。
 
 ---
 
-## 📍 把 LINE 經緯度放進 Google Maps Retrieval Config
+## 📍 把 LINE 給的兩個數字，交給 Google Maps
 
 位置查詢的核心如下：
 
@@ -106,21 +106,23 @@ const response = await ai.models.generateContent({
 });
 ```
 
+程式看起來不少，但核心其實很單純：把使用者的 latitude、longitude 放進 `latLng`，再告訴模型可以使用 Google Maps。
+
 Prompt 裡我特別保留一句：
 
 > 沒有資料時，不要自行宣稱有插座、Wi-Fi、不限時或安靜。
 
 這些條件很適合咖啡廳推薦，但不一定存在於每間店的 Maps 資料裡。
 
-Codex 在這裡沒有幫我把答案「補得更完整」，反而替 prompt 加上事實邊界。對 Grounded product 來說，少說一點通常比自信地猜更好。
+Codex 在這裡沒有幫我把答案硬補得很漂亮，反而替 prompt 畫了一條線。對這種有地圖資料的產品來說，少說一點，通常比很有自信地猜更好。
 
 ---
 
-## 🌏 英文 Grounding、繁中轉譯，為什麼要拆兩次呼叫？
+## 🌏 地圖先用英文查，最後再好好說中文
 
 Google Maps Grounding 文件要求 Grounded prompt 與 response 使用英文，但 LINE 使用者希望看到繁體中文。
 
-所以 Codex 設計成兩階段：
+所以 Codex 沒有硬逼第一次回答直接變中文，而是設計成兩階段：
 
 ```text
 LINE 經緯度
@@ -149,11 +151,11 @@ candidate.groundingMetadata?.groundingChunks
 
 取出。
 
-Codex 也替翻譯加上 fallback：如果第二次模型呼叫失敗，至少保留原始英文 Grounded response，不讓整個推薦流程跟著中斷。
+Codex 也替翻譯加上備案：如果翻譯這一步失敗，至少先把原始英文回答保留下來，不要讓整個搜尋一起消失。
 
 ---
 
-## 🔗 回答要有 Google Maps Attribution，不只是好看而已
+## 🔗 AI 說了什麼，使用者應該能點回去確認
 
 每個 Maps chunk 可能包含：
 
@@ -170,15 +172,15 @@ chunk.maps?.placeId
 - 提供「在 Google Maps 查看」按鈕
 - 讓使用者自行確認營業時間、照片、評論與導航
 
-這讓推薦變得可以驗證。
+這讓推薦不再只是「AI 說的」，而是變成可以驗證的資訊。
 
 使用者不是只能相信 AI，而是可以直接回到來源。
 
 ---
 
-## 🧩 真實 API 測試抓到的問題：Review URL 塞滿整個 Carousel
+## 🧩 真實測試才發現：五張卡片裡，有三張可能是同一家店
 
-TypeScript 編譯與單元測試都通過後，Codex沒有停在 mock data。
+TypeScript 編譯與單元測試都通過後，Codex 沒有停在假資料。
 
 它用台北座標實際呼叫一次 Vertex Maps Grounding，只輸出摘要長度、來源數量與來源標題，不輸出敏感資料。
 
@@ -188,7 +190,7 @@ TypeScript 編譯與單元測試都通過後，Codex沒有停在 mock data。
 - `Review of ...` 評論頁
 - 同一店家的多個 review URLs
 
-原本解析器只用 URL 去重，因此不同評論 URL 都被當成不同店家。
+原本程式只看網址是否相同。偏偏同一家店的店家頁、不同評論頁，本來就有不同網址，因此全部被當成不同店家。
 
 Codex 根據真實 response 修改策略：
 
@@ -211,7 +213,7 @@ if (!existing || (existing.isReview && !isReview)) {
 
 接著 Codex 把這個真實案例補進單元測試，確認 review 先出現、店家頁後出現時，最後仍會保留店家頁。
 
-這一段很能代表我喜歡的 AI 協作方式：
+這一段很能代表我喜歡的 AI 協作方式：Codex 不是宣布「測試通過」就收工，而是真的去看使用者最後會看到什麼。
 
 > 不是只把文件範例寫進專案，而是用真實 API 回應驗證，發現產品問題，再把問題變成測試。
 
@@ -235,7 +237,7 @@ if (!existing || (existing.isReview && !isReview)) {
 
 但下一篇才是最像正式產品的考驗：ADC 登入、IAM、quota project、Cloud Run runtime service account，以及「Webhook 明明回 200，使用者卻完全沒收到回答」。
 
-👉 **下一篇：LINE Webhook 200 卻沒回覆——用 Codex 排查 ADC、IAM、Cloud Run 與非同步生命週期**
+👉 **下一篇：明明顯示 200 OK，LINE Bot 為什麼不回話？一次真實的 Cloud Run 除錯紀錄**
 
 ---
 

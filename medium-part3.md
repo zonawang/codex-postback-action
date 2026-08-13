@@ -1,20 +1,20 @@
-# LINE Webhook 200 卻沒回覆：用 Codex 排查 ADC、IAM、Cloud Run 與非同步生命週期
+# 明明顯示 200 OK，LINE Bot 為什麼不回話？一次真實的 Cloud Run 除錯紀錄
 
 前兩篇，我和 Codex 完成了 LINE Location Action、Vertex AI Google Maps Grounding、繁中轉譯與來源卡片。
 
-本機測試已經成功，接下來只差部署。
+本機測試已經成功，我原本以為接下來只要按下部署，收工。
 
 我原本以為這會是最簡單的一段，結果真正上線後，才遇到整個系列最值得記錄的問題：
 
 > Cloud Run health 正常、LINE Webhook Verify 也是 200，但使用者傳送位置後，聊天室完全沒反應。
 
-這一篇會完整記錄 Codex 如何協助我操作 gcloud、判斷 IAM 問題、部署 service account、讀 Cloud Logging，再從 request lifecycle 找到真正根因。
+結果這段才是整個系列最像實戰的地方。這一篇會記錄 Codex 如何陪我登入 Google Cloud、辨認權限問題、部署服務，再從一堆「看起來都正常」的 logs 裡找到真正根因。
 
 ---
 
-## 🔐 Codex 幫我登入 ADC，卻立刻發現帳號選錯了
+## 🔐 登入成功了，但拿錯了工作證
 
-Vertex AI 本機開發使用 Application Default Credentials：
+Vertex AI 本機開發使用 Application Default Credentials，簡稱 ADC。先不用記這個長名字，可以把它想成：**讓本機程式拿到一張 Google Cloud 工作證。**
 
 ```bash
 gcloud auth application-default login
@@ -38,7 +38,7 @@ gcloud projects list
 
 結果發現目前登入帳號根本看不到任何 GCP project。
 
-問題不是「沒登入」，而是登入了另一個 Google 帳號。
+問題不是「沒登入」，而是拿到另一個 Google 帳號的工作證。那個帳號雖然真實存在，卻沒有這個 project 的門禁權限。
 
 重新指定正確 project owner 帳號並同步 ADC 後：
 
@@ -54,13 +54,15 @@ Codex 再檢查一次，確認：
 - 帳號具有 Owner role
 - Vertex AI API 已啟用
 
-這段讓我重新理解：
+這段讓我重新理解兩個常被混在一起的概念：
 
-> Authentication 成功，只代表 Google 知道你是誰；Authorization 成功，才代表你能操作這個 project。
+> Authentication 是警衛認得你；Authorization 是你的卡真的刷得進這一層樓。
 
 ---
 
-## 🧩 Quota Project 設不上，不一定是 IAM 不足
+## 🧩 有工作證之後，還要告訴 Google「這次算哪個專案的」
+
+ADC 登入後，還要設定 quota project。白話來說，就是告訴 Google：這次 API 的用量與配額要記在哪個 project 名下。
 
 接著執行：
 
@@ -84,7 +86,7 @@ gcloud services enable cloudresourcemanager.googleapis.com
 
 API 啟用後，Codex重新設定 quota project，再跑一次台北座標 Maps Grounding，成功取得繁中摘要與 Google Maps sources。
 
-我很喜歡這種除錯方式：
+我很喜歡 Codex 這次的除錯方式：
 
 1. 不只看錯誤第一行
 2. 找到結構化 reason
@@ -93,11 +95,11 @@ API 啟用後，Codex重新設定 quota project，再跑一次台北座標 Maps 
 
 ---
 
-## ☁️ Codex 建立專用 Cloud Run Runtime 身分
+## ☁️ Cloud Run 也需要自己的「機器員工證」
 
 本機 ADC 成功後，下一步是正式環境。
 
-Cloud Run 不應該使用某個人的本機 credentials，也不需要上傳 service account JSON key。
+Cloud Run 上線後，不應該繼續借用我的個人登入。比較合理的做法，是替這個服務建立一位專用的「機器員工」，也就是 service account。
 
 Codex 建立專用 runtime service account：
 
@@ -131,11 +133,11 @@ gcloud run deploy line-map-grounding \
 - LINE webhook endpoint 更新成功
 - LINE 官方 webhook test 回傳 OK
 
-到這裡，我們都以為完成了。
+到這裡，health 是綠的、LINE Verify 也是綠的，我們都以為終於完成了。
 
 ---
 
-## 😶 使用者真的傳位置後，Bot 卻完全沒反應
+## 😶 所有燈號都是綠的，使用者卻只看到一片安靜
 
 手機實測時，位置成功送出，但聊天室沒有任何回答。
 
@@ -146,7 +148,7 @@ Codex 先讀 Cloud Run request logs，看到：
 - user agent 是 LINE webhook
 - response status 是 200
 
-表面上沒有任何錯誤。
+表面上沒有任何錯誤。這種問題比直接跳 500 更讓人困惑，因為系統像是在很有禮貌地告訴你：「我一切正常。」
 
 接著 Codex 把查詢縮小，只看該 revision 的 stdout / stderr，發現應用程式沒有 Grounding 開始、完成或 LINE reply 的 logs。
 
@@ -160,7 +162,7 @@ const results = await Promise.allSettled(
 );
 ```
 
-Webhook 一進來就先結束 HTTP response，才在背景執行 Vertex AI。
+Webhook 一進來就先回覆「收到」，等於櫃台先把案件蓋上「已完成」章，才轉身開始處理真正的工作。
 
 本機 Node.js 可能看起來還會跑，但在 Cloud Run 上，不能把 response 結束後的背景 Promise 當成可靠保證。
 
@@ -168,7 +170,7 @@ Webhook 一進來就先結束 HTTP response，才在背景執行 Vertex AI。
 
 ---
 
-## 💡 Codex 提出的修復：Loading Animation + Push Message
+## 💡 先讓使用者知道我們正在找，再把結果主動送回去
 
 Codex 將流程改成：
 
@@ -195,7 +197,7 @@ await lineClient.pushMessage({
 res.sendStatus(200);
 ```
 
-為什麼使用 Push Message？
+為什麼 Codex 改用 Push Message？
 
 因為 Grounding 與翻譯需要時間。結果傳送與原始 reply token 解耦後，不需要把長時間任務綁死在 reply token 上。
 
@@ -216,9 +218,9 @@ Codex 修改後立刻執行：
 
 ---
 
-## 🔍 Codex 也補上了原本缺少的 Observability
+## 🔍 Logs 就像沿路留下腳印，不然只能猜 Bot 走到哪裡
 
-這次難查，是因為成功路徑幾乎沒有 logs。
+這次難查，是因為原本只有失敗會寫 logs。只要程式安靜地停在中間，我們就不知道它走到哪一步。
 
 Codex 加入：
 
@@ -246,7 +248,7 @@ logger.info('Cafe search reply sent', {
 - 回了幾個來源
 - Push Message 是否成功
 
-這比從 200 request log 猜測有效太多。
+這比盯著一排 200 猜測有效太多。
 
 ---
 
@@ -283,7 +285,7 @@ curl https://<service-url>/health
 4. 等待繁中摘要與 Maps 卡片
 5. 對照 Cloud Logging 成功路徑
 
-Codex 這次最重要的提醒是：前四層全部成功，仍然不能取代第五層。
+Codex 這次最重要的提醒是：前四層全部成功，仍然不能取代最後真的拿手機用一次。
 
 ---
 
@@ -304,7 +306,7 @@ Codex 這次最重要的提醒是：前四層全部成功，仍然不能取代�
 - 修改 Loading Animation 與 Push Message
 - 重新測試、部署、提交
 
-這讓我對 Codex 的感受不只停在「心得」段落，而是整個實作過程都很明確：
+這次 Codex 的存在感不是只出現在文章最後的心得，而是散在每一個真實決定裡：看完整錯誤、切換帳號、驗證權限、部署、縮小 log 範圍、修改流程，再請我重新傳一次位置。
 
 **它真正有價值的地方，不只是會寫 code，而是能使用終端機、讀現況、驗證假設，陪我把線上問題一路查到使用者真的收到答案。**
 

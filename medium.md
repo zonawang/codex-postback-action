@@ -1,4 +1,4 @@
-# LINE Map Grounding：三篇 Medium 實戰系列
+# 我用 Codex 做了一個會看地圖的 LINE Bot：三篇實戰系列
 
 原本的完整實作已重新整理成三篇可以獨立閱讀與發布的文章。
 
@@ -6,7 +6,7 @@
 
 👉 [`medium-part1.md`](./medium-part1.md)
 
-**用 Codex 從空 Repo 做 LINE 定位 Bot：先把 Location Action 與 Webhook 骨架打通**
+**我用 Codex 從空 Repo 做 LINE 定位 Bot：先讓 Bot 正確收到「我在哪裡」**
 
 - 從空 GitHub repo 開始
 - Codex 如何規劃 TypeScript / Express 架構
@@ -18,7 +18,7 @@
 
 👉 [`medium-part2.md`](./medium-part2.md)
 
-**用 Vertex AI Google Maps Grounding 找咖啡廳：從文件轉向、繁中轉譯到來源去重**
+**讓 LINE Bot 真的看懂附近有什麼：用 Vertex AI Google Maps Grounding 找咖啡廳**
 
 - Codex 如何對照兩份 Google 文件
 - 從 Gemini API key 改成 Vertex AI ADC
@@ -30,7 +30,7 @@
 
 👉 [`medium-part3.md`](./medium-part3.md)
 
-**LINE Webhook 200 卻沒回覆：用 Codex 排查 ADC、IAM、Cloud Run 與非同步生命週期**
+**明明顯示 200 OK，LINE Bot 為什麼不回話？一次真實的 Cloud Run 除錯紀錄**
 
 - 登入成功但 Vertex AI 仍然 403
 - quota project 與 Cloud Resource Manager API
