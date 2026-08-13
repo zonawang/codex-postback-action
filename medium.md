@@ -1,33 +1,39 @@
-# LINE Map Grounding Medium 系列文章
+# LINE Map Grounding：三篇 Medium 實戰系列
 
-原本的完整實戰長文已重新整理成兩篇可以獨立發布的 Medium 文章。
+原本的完整實作已重新整理成三篇可以獨立閱讀與發布的文章。
 
-## 上篇：產品與 Grounding 實作
+## 第一篇：LINE 定位與專案骨架
 
 👉 [`medium-part1.md`](./medium-part1.md)
 
-**LINE Bot 實戰（上）：用 Vertex AI Google Maps Grounding，讓使用者傳定位就能找到附近咖啡廳**
+**用 Codex 從空 Repo 做 LINE 定位 Bot：先把 Location Action 與 Webhook 骨架打通**
 
-內容包含：
+- 從空 GitHub repo 開始
+- Codex 如何規劃 TypeScript / Express 架構
+- LINE Location Action 與 Quick Reply
+- Webhook、handler、message、service 分層
+- 第一階段測試與部署準備
 
-- LINE 原生 Location Action
-- Vertex AI / Gemini Enterprise client
-- Google Maps Grounding 與經緯度
-- 英文 Grounding、繁中轉譯
-- Google Maps attribution 與 Flex Message
-- 店家頁、評論頁與 `placeId` 去重
-
-## 下篇：雲端部署與真實除錯
+## 第二篇：Vertex Maps Grounding
 
 👉 [`medium-part2.md`](./medium-part2.md)
 
-**LINE Bot 實戰（下）：從 ADC、IAM 到 Cloud Run，解決 Webhook 200 卻完全沒回覆的問題**
+**用 Vertex AI Google Maps Grounding 找咖啡廳：從文件轉向、繁中轉譯到來源去重**
 
-內容包含：
+- Codex 如何對照兩份 Google 文件
+- 從 Gemini API key 改成 Vertex AI ADC
+- 經緯度與 `googleMaps` tool
+- 英文 Grounding、繁中轉譯
+- Google Maps attribution、Flex Message 與 `placeId` 去重
 
-- Application Default Credentials
-- 登入成功但沒有專案權限
+## 第三篇：雲端部署與線上除錯
+
+👉 [`medium-part3.md`](./medium-part3.md)
+
+**LINE Webhook 200 卻沒回覆：用 Codex 排查 ADC、IAM、Cloud Run 與非同步生命週期**
+
+- 登入成功但 Vertex AI 仍然 403
 - quota project 與 Cloud Resource Manager API
 - Cloud Run runtime service account
-- webhook response lifecycle
+- Webhook 200 但背景 Promise 沒有可靠完成
 - Loading Animation、Push Message 與 Cloud Logging

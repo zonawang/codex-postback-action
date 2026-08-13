@@ -1,45 +1,75 @@
-# LINE Bot 實戰（上）：用 Vertex AI Google Maps Grounding，讓使用者傳定位就能找到附近咖啡廳
+# 用 Codex 從空 Repo 做 LINE 定位 Bot：先把 Location Action 與 Webhook 骨架打通
 
-大家哈囉！今天想分享一個我自己非常喜歡的 LINE Bot 實戰：
+大家哈囉！今天想記錄一個新的 LINE Bot 實戰系列。
 
-**使用者只要在 LINE 裡傳送目前位置，Bot 就會透過 Vertex AI 的 Google Maps Grounding，找出附近 3～5 間咖啡廳，整理成繁體中文推薦，最後附上可以直接打開的 Google Maps 來源卡片。**
+這次我想做的是一個「附近咖啡廳助手」：
 
-這個需求聽起來很簡單：
+> 使用者在 LINE 傳送目前位置，Bot 根據經緯度找出附近咖啡廳，再附上可以直接打開的 Google Maps 來源。
 
-> 丟位置給 Bot，Bot 幫我找附近咖啡廳。
+完整功能會用到 Vertex AI Google Maps Grounding、Cloud Run、IAM 與 LINE Messaging API。
 
-但真正做下去後，我才發現它一次串起了幾個很有意思的技術問題：
+但第一篇我不急著碰模型，而是先記錄一件更重要的事：**如何和 Codex 從一個空 GitHub repo 開始，把 LINE 定位輸入與可延伸的 webhook 架構做好。**
 
-- LINE 原生位置訊息（Location Message）
-- Vertex AI 與 Google Maps Grounding
-- 經緯度如何傳給模型
-- 英文 Grounding 與繁體中文回答
-- Google Maps 來源 attribution
-- 店家頁與評論頁的資料去重
-
-這一篇先聚焦在產品與 Grounding 本身：如何讓一個位置真的變成一份有來源、可以點開、看得懂的咖啡廳推薦。
-
-至於 ADC、IAM、Cloud Run，以及最戲劇性的「Webhook 明明 200，LINE 卻完全沒反應」，我會放在下篇完整記錄。
+因為如果一開始所有邏輯都塞在同一個檔案，後面加入 Grounding、翻譯、Flex Message 與雲端除錯時，專案很快就會變成一團。
 
 ---
 
-## ☕ 我想做的互動流程其實很簡單
+## 🧱 我沒有先叫 Codex 生功能，而是先一起定義第一版範圍
 
-一開始，我先把使用者體驗定得非常清楚：
+目標 repo 一開始是空的。
 
-1. 使用者傳送「開始」或任意文字。
-2. Bot 顯示 LINE 原生的「傳送目前位置」Quick Reply。
-3. 使用者分享目前位置。
-4. 後端取得 latitude 與 longitude。
-5. Vertex AI 透過 Google Maps Grounding 搜尋附近咖啡廳。
-6. 系統將英文 Grounded response 翻成台灣繁體中文。
-7. Bot 回傳推薦摘要，以及每個 Google Maps 來源的 Flex Message 卡片。
+我先告訴 Codex，今天不是只要一段範例，而是要一個能部署、能測試、能繼續長大的 MVP。
 
-這個流程最重要的設計原則是：
+第一階段範圍很明確：
 
-**使用者不需要手打地址，也不需要離開 LINE 去搜尋。**
+- Node.js + TypeScript + Express
+- LINE webhook signature 驗證
+- `GET /health`
+- 文字訊息顯示操作引導
+- LINE 原生 Location Action
+- location event 交給獨立 handler
+- `.env.example`、Dockerfile、README
+- Cloud Run 可部署結構
 
-位置輸入直接使用 LINE 原生的 `location` action：
+Codex 沒有直接把全部功能寫進 `server.ts`，而是先參考我過往 LINE Bot 專案的拆法，再建立這個結構：
+
+```text
+src/
+  app.ts
+  server.ts
+  handlers/
+    webhookEventHandler.ts
+  messages/
+    cafeMessages.ts
+  routes/
+    webhook.ts
+  services/
+    lineClient.ts
+  utils/
+    env.ts
+    logger.ts
+```
+
+這次我很喜歡 Codex 的地方，是它不只回答「可以怎麼做」，而是真的在 repo 裡建立檔案、安裝套件、跑 typecheck，再根據 SDK 型別修正實作。
+
+對我來說，這比一次貼出幾百行 code 更接近真正的協作。
+
+---
+
+## 📍 為什麼位置輸入一定要用 LINE 原生 Location Action？
+
+最直覺的做法，是請使用者打地址。
+
+但地址可能長這樣：
+
+- 台北市信義區市政府附近
+- 101 旁邊
+- 我現在這裡
+- 松高路那一帶
+
+後端不只要解析文字，還要再做 geocoding，輸入品質也很不穩定。
+
+所以 Codex 建議直接使用 LINE 原生 `location` action：
 
 ```typescript
 const locationQuickReply = {
@@ -55,207 +85,146 @@ const locationQuickReply = {
 };
 ```
 
-使用者點下按鈕後，LINE 會直接開啟地圖介面。送出的位置會進入 webhook，後端可以取得乾淨的經緯度，不需要自己解析格式不固定的地址文字。
+使用者點擊後，LINE 會直接開啟地圖介面。送出時，webhook 收到的是乾淨的：
 
-這跟我之前做 Datetime Picker、Camera Action 時的體會很像：
+```typescript
+event.message.latitude
+event.message.longitude
+```
 
-**只要 LINE 已經有原生輸入元件，就應該盡量讓使用者用點的，不要叫使用者自己打。**
+這跟我之前做 Camera Action、Datetime Picker 時的心得一樣：
+
+**LINE 已經有原生元件時，讓使用者用點的，通常比叫他自己打更可靠。**
 
 ---
 
-## 🗺️ 這次不是只問 Gemini，而是讓答案真的 Grounding 在 Google Maps 上
+## 💬 第一版互動先保持簡單
 
-一般 LLM 很會回答「附近有什麼咖啡廳」，但如果沒有即時地圖資料，它可能只是使用模型記憶，甚至產生已歇業、位置錯誤或不存在的店家。
+文字訊息不需要進 AI。
 
-所以這次的重點不是單純呼叫 Gemini，而是啟用 **Google Maps Grounding**。
-
-我們最後採用 Vertex AI / Gemini Enterprise Agent Platform 的方式進入，不使用 `GEMINI_API_KEY`，而是透過 Google Cloud 身分進行認證。
-
-初始化方式如下：
+使用者傳送「開始」或任意文字時，Bot 只要清楚說明功能並顯示位置按鈕：
 
 ```typescript
-import { GoogleGenAI } from '@google/genai';
-
-const ai = new GoogleGenAI({
-  enterprise: true,
-  project: process.env.GOOGLE_CLOUD_PROJECT,
-  location: process.env.GOOGLE_CLOUD_LOCATION || 'global',
-  apiVersion: 'v1'
-});
+export function createWelcomeMessage() {
+  return {
+    type: 'text',
+    text: [
+      '☕ 我可以用 Google Maps 資料幫你找附近咖啡廳。',
+      '',
+      '點下面按鈕傳送位置，我會推薦 3–5 間適合坐下來喝咖啡或使用筆電的店。'
+    ].join('\n'),
+    quickReply: locationQuickReply
+  };
+}
 ```
 
-真正查詢咖啡廳時，Google Maps tool 與使用者位置會放在 `generateContent` 設定中：
+Codex 在這裡沒有過度設計意圖分類，也沒有急著加入資料庫。
+
+它先把最短的使用者路徑跑通：
+
+1. 傳送文字
+2. 看見按鈕
+3. 分享位置
+4. webhook 正確辨識 `location` message
+
+這個小流程其實已經驗證了 LINE channel、signature、SDK client 與事件分派。
+
+---
+
+## 🧩 Webhook Route 不應該知道咖啡廳怎麼找
+
+這次架構裡，我特別希望 route 保持乾淨。
+
+`routes/webhook.ts` 只負責：
+
+- LINE middleware 與 signature 驗證
+- 取得 events
+- 呼叫 event handler
+- 回傳 HTTP response
+
+真正判斷文字或位置訊息，放在 `webhookEventHandler.ts`：
 
 ```typescript
-const response = await ai.models.generateContent({
-  model: 'gemini-2.5-flash',
-  contents: [
-    'Find 3 to 5 good cafes near the supplied user location.',
-    'Prioritize places that are practical for sitting down with a laptop.',
-    'Do not invent outlet, Wi-Fi, time-limit, or noise information when unavailable.',
-    'Keep the full answer concise and respond in English.'
-  ].join(' '),
-  config: {
-    tools: [{ googleMaps: {} }],
-    toolConfig: {
-      retrievalConfig: {
-        latLng: { latitude, longitude },
-        languageCode: 'en_US'
-      }
-    }
+export async function handleWebhookEvent(event: WebhookEvent) {
+  if (event.type !== 'message') {
+    return;
   }
-});
-```
 
-這裡最重要的不是 prompt 寫得多華麗，而是我們明確要求模型：
+  if (event.message.type === 'text') {
+    await reply(event.replyToken, [createWelcomeMessage()]);
+    return;
+  }
 
-- 只推薦 3～5 間，避免 LINE 訊息太長
-- 優先考慮適合坐下來或使用筆電的店
-- 沒有資料就不要亂說有插座、Wi-Fi 或不限時
-- 回答必須建立在 Grounding 資料上
-
-尤其是「沒有資料就不要亂說」非常重要。
-
-插座、安靜程度、不限時這些資訊，不一定會出現在每間店的 Google Maps 資料裡。如果為了讓推薦看起來完整，硬叫 AI 每間都寫，反而很容易把不確定的資訊講得像真的。
-
----
-
-## 🌏 為什麼要做「英文 Grounding、繁中轉譯」兩階段？
-
-參考 Google Maps Grounding 文件時，我們確認到目前 Grounded prompt 與 response 需要使用英文。
-
-但我的 LINE Bot 使用者當然希望看到繁體中文。
-
-所以最後的架構不是硬要求 Grounding 直接回中文，而是拆成兩個階段：
-
-```text
-LINE 經緯度
-    ↓
-Vertex AI + Google Maps Grounding
-    ↓
-英文 Grounded recommendation + Google Maps metadata
-    ↓
-同一個 Vertex AI client 進行繁中轉譯
-    ↓
-繁中摘要 + 原始 Google Maps 來源卡片
-```
-
-第二次模型呼叫只做翻譯，而且限制非常清楚：
-
-- 保留店名、數字與所有事實
-- 不新增原回答沒有的資訊
-- 不自己產生 URL
-- 只輸出翻譯後的推薦內容
-
-Google Maps URL 完全不經過翻譯模型，而是直接從 `groundingMetadata.groundingChunks` 取出。
-
-這樣可以避免一個很危險的情況：
-
-**中文翻得很好，但網址是模型自己生的。**
-
-回答內容可以整理，來源連結不能猜。
-
----
-
-## 🔗 不只顯示答案，也要把 Google Maps 來源完整呈現
-
-Google Maps Grounding 的回應不只包含文字，也會附上實際使用過的 Maps chunks。
-
-我們從以下欄位取得店家名稱與網址：
-
-```typescript
-const chunks = candidate.groundingMetadata?.groundingChunks ?? [];
-
-for (const chunk of chunks) {
-  const maps = chunk.maps;
-
-  if (maps?.title && maps?.uri) {
-    // 建立 Google Maps 來源卡片
+  if (event.message.type === 'location') {
+    // 下一篇接入 Maps Grounding
   }
 }
 ```
 
-最後在 LINE 中，我沒有只丟一長串純文字，而是將來源做成 Flex Message carousel：
+Codex 在產生程式後，還繼續做兩種檢查：
 
-- 顯示咖啡廳名稱
-- 標示「資料來源：Google Maps」
-- 提供「在 Google Maps 查看」按鈕
-- 使用者可以直接查看營業時間、照片、評論與導航
-
-這個設計不只比較漂亮，也讓 AI 推薦變得可以驗證。
-
-使用者不是只能相信 Bot，而是能直接點回資料來源確認。
-
----
-
-## 🧩 實測後才發現：5 個 Maps 來源，不代表是 5 間不同咖啡廳
-
-第一次 Maps Grounding 實測成功時，我們真的拿到了 5 個 sources。
-
-但仔細看標題，卻發現裡面同時包含：
-
-- 店家的 Google Maps 頁面
-- 同一間店的 Review 頁面
-- 同一地點不同評論來源
-
-如果直接全部做成 Flex Message，使用者會看到好幾張幾乎一樣的卡片，還以為 Bot 只會推薦同一間店。
-
-所以不能只用 URL 去重，因為店家頁與評論頁本來就是不同 URL。
-
-最後的做法是：
-
-1. 優先使用 `placeId` 當唯一識別。
-2. 沒有 `placeId` 時，再用正規化後的店名去重。
-3. 移除標題中的 `Review of` 與 `- Google Maps`。
-4. 同一地點同時有店家頁與評論頁時，優先保留店家頁。
-
-核心概念如下：
-
-```typescript
-const key = maps.placeId || normalizedTitle || maps.uri;
-
-if (!existing || (existing.isReview && !isReview)) {
-  uniqueSources.set(key, {
-    title: normalizedTitle,
-    uri: maps.uri,
-    isReview
-  });
-}
+```bash
+npm run typecheck
+npm test
 ```
 
-這是一個很典型的 Grounding 實戰問題：
+這很重要，因為 LINE SDK 的型別、ESM 匯入與 runtime 行為，不一定只靠「看起來正確」就能確認。
 
-**資料有回來，不代表資料已經適合直接顯示。**
-
-AI integration 後面通常還需要一層產品化整理，才能真正成為好用的介面。
+Codex 不是寫完就停，而是把 server build 起來，再做 `/health` smoke test。這讓第一階段不只是 code review 上合理，而是真的可以啟動。
 
 ---
 
-## 🏆 上篇實戰總結
+## ☁️ 從第一天就把部署條件放進設計
 
-到這裡，我們已經完成一條完整的 location-aware recommendation pipeline：
+雖然第一篇還沒接 Vertex AI，但專案一開始就加入：
 
-- LINE 原生 Location Action 接收乾淨經緯度
-- Vertex AI Google Maps Grounding 搜尋附近咖啡廳
-- 英文 Grounding、繁體中文轉譯
-- Google Maps 來源不經模型改寫
-- Flex Message 呈現店家與來源按鈕
-- 使用 `placeId` 合併店家頁與評論頁
+- `Dockerfile`
+- `.dockerignore`
+- Cloud Run 使用的 `PORT`
+- 結構化 JSON logger
+- 不提交 secret 的 `.gitignore`
+- `/health` endpoint
 
-但程式在本機成功，只代表產品完成一半。
+這也是 Codex 協作帶來的改變。
 
-真正部署到 Google Cloud 後，我們接著遇到了：登入成功卻沒有權限、quota project 設定失敗、Cloud Run runtime 身分，以及最讓人困惑的「Webhook 200 OK，但使用者傳位置後完全沒反應」。
+如果我只是請它「寫一個 location handler」，可能很快就會有答案；但當我明確說最終要部署到 GitHub 與 Cloud Run，它就會從一開始把 runtime、環境變數與驗證方式一起考慮。
 
-這些問題，我會在下篇完整拆解。
+產品不是最後才突然需要部署。
 
-👉 **下篇：LINE Bot 實戰（下）——從 ADC、IAM 到 Cloud Run，解決 Webhook 200 卻完全沒回覆的問題**
+部署限制應該從第一版架構就進來。
+
+---
+
+## 🏆 第一篇實戰總結
+
+第一階段看起來還沒有 AI，但它已經完成了幾個重要里程碑：
+
+- 從空 repo 建立 TypeScript + Express 專案
+- LINE webhook signature 驗證
+- 文字訊息與位置訊息分流
+- 原生 Location Action 降低輸入摩擦
+- route、handler、message、service 分層
+- health、build、typecheck 與測試
+- Docker 與 Cloud Run 部署骨架
+
+更重要的是，我不是叫 Codex 丟一份範例給我，而是讓它直接參與：
+
+- 讀過往 repo
+- 提出架構
+- 建立檔案
+- 安裝依賴
+- 修正型別
+- 執行測試
+- 把結果推到 GitHub
+
+下一篇，我們會把 location event 的 latitude / longitude 真正交給 Vertex AI Google Maps Grounding，並處理英文回答、繁中轉譯、Google Maps attribution，以及實測後才發現的重複來源問題。
+
+👉 **下一篇：用 Vertex AI Google Maps Grounding 找咖啡廳——從文件轉向、繁中轉譯到來源去重**
 
 ---
 
 ### 📂 專案開源與完整程式碼
 
-本次完整程式碼已整理在 GitHub：
+👉 **GitHub：[https://github.com/zonawang/line-map-grounding](https://github.com/zonawang/line-map-grounding)**
 
-👉 **GitHub 儲存庫：[https://github.com/zonawang/line-map-grounding](https://github.com/zonawang/line-map-grounding)**
-
-👉 **更多過往 AI × LINE Bot 實作：[https://github.com/zonawang/zona-ai-learning-lab](https://github.com/zonawang/zona-ai-learning-lab)**
+👉 **更多 AI × LINE Bot 實作：[https://github.com/zonawang/zona-ai-learning-lab](https://github.com/zonawang/zona-ai-learning-lab)**
