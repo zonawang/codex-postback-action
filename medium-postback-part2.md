@@ -1,343 +1,170 @@
-# 從按鈕到真正上線：我和 Codex 實作 LINE Postback、Fallback 與安全切換
+# 一顆「換一批」背後要記住什麼？我和 Codex 設計 Firestore 搜尋 Session
 
-上一篇，我和 Codex 先處理了「換一批」背後最重要的狀態問題：用短 Postback data 指向 Firestore session，再用使用者驗證、過期時間與 transaction 鎖保護它。
-
-但資料模型設計完成，不代表使用者已經可以按。
-
-今天接下來的工作，是把這套設計接進既有 Zona Cafe：收到 Postback event、找回上次位置、避開上一批店家、更新搜尋偏好、組出新的 LINE 按鈕，最後在不關掉舊服務的情況下切換正式 webhook。
-
-這篇不重講 Google Maps Grounding 怎麼查、Cloud Run 是什麼，也不再介紹 Loading Animation。只記錄這次 Postback 功能新增的程式邊界、測試策略，以及 Codex 如何做一次可回復的線上切換。
-
----
-
-## 🧩 Codex 先把 Postback 從原本的 Message 流程分出去
-
-原本的 webhook handler 主要處理文字與位置訊息。Postback 加進來後，Codex 沒有把判斷全部塞進 location 區塊，而是在事件進入點先分流：
-
-```typescript
-if (event.type === 'postback') {
-  await handlePostbackEvent(event);
-  return;
-}
-
-if (event.type !== 'message') {
-  return;
-}
-```
-
-新的 `postbackHandler.ts` 只負責 Postback 的生命週期：
-
-1. 解析按鈕帶回來的資料
-2. 驗證 action 與 session
-3. 取得 Firestore 處理鎖
-4. 組合新的搜尋條件
-5. 呼叫既有咖啡廳搜尋服務
-6. 更新 session
-7. 將新結果推回原聊天室
-
-Codex 保留原本 location 搜尋的責任，也讓未來新增 `favorite` 或 `feedback` 時有清楚的擴充入口。
-
-這不是為了多建立一個檔案，而是避免「第一次搜尋」與「沿用舊狀態再搜尋」兩種不同流程互相纏住。
-
----
-
-## 🧾 Postback data 先經過 Parser，不直接進商業邏輯
-
-Postback data 長得像 query string：
+上一篇，我和 Codex 決定讓 Postback data 只帶一個短 session ID：
 
 ```text
 v=1&a=reroll&s=abc123
 ```
 
-Codex 沒有在 handler 裡到處呼叫 `params.get()`，而是建立專用 parser，把外部輸入轉成程式內可信任的型別。
+但真正的位置、偏好與上一批店家要放在哪裡？
 
-```typescript
-type CafePostbackAction = 'reroll' | 'work_friendly';
-
-type ParsedCafePostback = {
-  action: CafePostbackAction;
-  sessionId: string;
-};
-```
-
-Parser 會拒絕：
-
-- 不是 `v=1` 的資料
-- 不在白名單內的 action
-- 缺少 session ID
-- 含有斜線或不合法字元的 session ID
-
-這個邊界很重要。
-
-Firestore 的 document path、Gemini prompt 與後續 handler 都不應該直接接受一段未驗證字串。Codex 讓資料一進系統就先被縮成兩種明確 action，後面的程式不需要反覆猜測輸入是否安全。
-
-版本欄位 `v=1` 也替未來留下空間。哪天 data 格式真的要改，Codex 可以新增 `v=2` parser，而不是讓新舊按鈕互相誤解。
+這篇只處理這個問題。我不會重新介紹 Postback action，也不談後面的 handler 與部署，而是專注在 Codex 如何設計一個短期、可驗證、能防止連點的 Firestore 搜尋 session。
 
 ---
 
-## 🔄 「換一批」的核心不是 Random，而是記住上一批
+## 🗃️ Codex 先排除兩個看似簡單的方案
 
-如果使用相同座標與相同 prompt 再查一次，Gemini 很可能仍然推薦最熱門、最接近的幾間店。
+第一個方案是存在 Cloud Run 記憶體。
 
-所以 Codex 讓每次成功搜尋後，都把新的店名寫回 `previousCafeNames`。
+它實作很快，但 Cloud Run 可能重啟，也可能同時有多個 instance。第一次位置搜尋與下一次 Postback 不一定會落在同一台機器上。
 
-下一次 Postback 會把這些名稱傳進搜尋服務：
+第二個方案是請使用者每次重新傳位置。
 
-```typescript
-const result = await findNearbyCafes(
-  session.latitude,
-  session.longitude,
-  {
-    preference,
-    excludeNames: session.previousCafeNames
-  }
-);
-```
+這雖然不需要保存資料，卻直接失去「換一批」的便利性。
 
-搜尋 prompt 不是要求模型絕對排除，而是「有其他合理選擇時，推薦不同店家」。
+Codex 最後選擇 Firestore，因為這次需要的是跨 request、跨 instance 的短期狀態，而且現有服務本來就在 Google Cloud 上。
 
-Codex 保留這個彈性，因為有些地點附近本來就只有少數可用咖啡廳。如果寫成硬性禁止，模型可能為了湊數而拉遠距離，甚至降低 Grounding 品質。
-
-「更適合工作」則會把 session preference 更新成 `work_friendly`。後續再按「換一批」，仍會保留這個偏好，不會突然回到預設搜尋。
-
-Codex 同時要求模型只能根據 Google Maps 可取得的明確資訊做判斷，沒有證據時不能自行補上插座、Wi-Fi、不限時或安靜等描述。
-
-所以這個按鈕代表「搜尋時更重視工作情境」，不是一張虛構的設備保證書。
+這不是要建立完整會員資料庫，而是替一次搜尋留下 30 分鐘的記憶。
 
 ---
 
-## 💬 Quick Reply 顯示文字與後端指令，刻意分成兩件事
+## 🧱 Session 只保存下一步真的用得到的資料
 
-使用者看到的是：
-
-```text
-🔄 換一批咖啡廳
-```
-
-後端收到的則是：
+Codex 設計的文件大致如下：
 
 ```text
-v=1&a=reroll&s=<sessionId>
+cafe-search-sessions/{sessionId}
+  ownerId
+  conversationId
+  latitude
+  longitude
+  preference
+  previousCafeNames
+  createdAt
+  expiresAt
+  processingUntilMs
 ```
 
-Codex 透過 Postback action 的 `displayText` 與 `data` 把兩者分開：
+每個欄位都有下一步用途：
 
-```typescript
-{
-  type: 'postback',
-  label: '換一批',
-  displayText: '🔄 換一批咖啡廳',
-  data: createCafePostbackData('reroll', sessionId)
-}
-```
+- `ownerId`：確認是誰建立搜尋
+- `conversationId`：確認搜尋來自哪個 LINE 對話
+- `latitude`、`longitude`：不必重新分享的位置
+- `preference`：保留目前搜尋偏好
+- `previousCafeNames`：讓下一批優先避開舊結果
+- `expiresAt`：拒絕太舊的按鈕
+- `processingUntilMs`：防止同一時間重複執行
 
-`displayText` 是給人看的，讓聊天室保留一段自然操作紀錄；`data` 是給程式看的，維持短、小、可驗證。
+Codex 沒有保存 Gemini 完整回答、整張 Flex Message 或所有 Maps metadata，因為下一次搜尋用不到。
 
-結果下方最後有三個 Quick Reply：
-
-- 換一批：Postback action
-- 更適合工作：Postback action
-- 重新選位置：Location action
-
-Codex 沒有為了統一格式犧牲語意。需要後端狀態的才用 Postback，需要手機重新提供座標的仍交給 LINE 原生位置介面。
+Session 越小，資料風險、讀寫成本與未來清理負擔也越小。
 
 ---
 
-## 🧯 Codex 為每個失敗階段準備不同回答
+## 🔐 Session ID 很難猜，不代表可以省略授權
 
-Postback 的錯誤不只有一種。
+Firestore 自動產生的 ID 不容易碰巧猜中，但 Codex 沒把「難猜」當成安全設計。
 
-如果全部只回「發生錯誤」，使用者不知道該等待、重按，還是重新傳位置。
+每次 Postback 都要同時符合：
 
-Codex 依照狀態提供不同訊息：
+```text
+session.ownerId === event.source.userId
+session.conversationId === currentConversationId
+```
 
-- Session 正在處理：請等待上一個結果
-- Session 過期或不存在：請重新傳送位置
-- Session 屬於其他人：這個按鈕無法由目前使用者操作
-- Gemini 或外部服務失敗：稍後再試
-- Postback data 無法辨識：重新建立一次搜尋
+只檢查使用者不夠，因為同一個人可能在不同對話操作 Bot；只檢查聊天室也不夠，因為群組裡可能有多位成員。
 
-錯誤訊息下方會附上「重新傳送位置」，讓使用者不需要自己猜下一步。
+Codex 將使用者與對話一起綁定。驗證失敗時，Bot 不會透露 session 裡的座標或店家，只會請目前使用者重新建立自己的搜尋。
 
-另一個比較不容易看到的 fallback 發生在第一次搜尋。
-
-如果咖啡廳結果已經找到，但 Firestore session 建立失敗，Codex 不會丟掉整份推薦。Bot 仍會送出摘要與 Google Maps 卡片，只是不顯示需要 session 的兩個 Postback 按鈕。
-
-這個處理讓新增的互動能力不會反過來降低原本功能的可用性。
+這讓一顆留在聊天紀錄裡的舊按鈕，不會變成讀取其他搜尋狀態的入口。
 
 ---
 
-## 🧪 測試重點不是 Gemini 會推薦哪間店
+## ⏱️ 程式負責守門，TTL 負責打掃
 
-地點推薦會受到位置、Maps 資料與模型回應影響，不適合用單元測試固定某一家店。
+LINE 訊息會留在聊天室，但搜尋狀態不需要永久存在。
 
-Codex 把測試放在這次程式真正能控制的邊界。
+Codex 將 session 有效期限設成 30 分鐘。超過時間再按，應用程式會直接拒絕，要求重新傳送位置。
 
-### Postback data
+Firestore 另外根據 `expiresAt` 啟用 TTL，自動刪除過期文件。
 
-- `reroll` 可以正確產生與還原
-- 產生結果沒有超過 LINE 的 300 字限制
-- 錯誤版本會被拒絕
-- 未知 action 會被拒絕
-- 不合法 session ID 會被拒絕
+這裡有一個容易混淆的重點：TTL 刪除不是即時發生。
 
-### LINE 訊息
+所以 Codex 沒有用「文件是否已被刪除」判斷按鈕是否有效，而是每次都由程式比較 `expiresAt`。
 
-- 有 session 時，結果包含兩個 Postback 與一個 location action
-- 沒有 session 時，只保留 location action
+- 應用程式時間檢查：決定現在能不能操作
+- Firestore TTL：稍後清除不再需要的資料
 
-### 原本能力
-
-- Google Maps source 去重仍然通過
-- TypeScript 全專案型別檢查仍然通過
-
-最後 Codex 執行：
-
-```bash
-npm run typecheck
-npm test
-```
-
-5 項測試全部成功。
-
-這組測試不嘗試證明外部世界永遠穩定，而是確認不管外部結果怎麼變，Postback protocol、訊息形狀與降級行為都維持一致。
+Codex 用一句很容易懂的方式整理：程式負責守門，TTL 負責打掃。
 
 ---
 
-## 🛤️ 這次上線最重要的設計：不要直接蓋掉舊服務
+## 🛑 防連點不能只放在單一 Node.js Process
 
-過往文章已經寫過 Cloud Run 基本部署與 IAM 除錯，所以這次 Codex 沒有再重做一遍相同流程。
+使用者等待 AI 搜尋時，很可能因為沒有立刻看到結果而連續點擊。
 
-今天真正新增的部署策略是「平行服務」：
+如果五次點擊都真的呼叫 Gemini，不只會收到重複訊息，也會浪費 API 用量。
+
+Codex 沒有在程式裡放一個普通布林值，因為不同 Cloud Run instance 不會共享它。
+
+它改用 Firestore transaction：
+
+1. 讀取 session
+2. 驗證擁有者、對話與有效期限
+3. 檢查目前是否已有處理鎖
+4. 寫入 90 秒的 `processingUntilMs`
+5. 搜尋完成或失敗後釋放
+
+讀取與上鎖在同一個 transaction 裡。兩個幾乎同時到達的點擊，只有一個能取得執行權。
+
+另一個請求會收到：
 
 ```text
-舊服務：line-map-grounding
-新服務：codex-postback-action
+上一個搜尋還在進行中，請稍等結果出現。
 ```
 
-Codex 先將完整基底與 Postback 功能放進新的 GitHub repo，再部署成另一個 Cloud Run service。
-
-這樣做有三個好處：
-
-1. 舊 Bot 在開發與部署期間不受影響。
-2. 新服務可以先做 health check 與 log 檢查。
-3. Webhook 切換失敗時，舊網址仍然存在，可以立刻切回。
-
-這次新增的 Firestore 存取也使用獨立 runtime service account，只補上實際需要的三個角色：
-
-```text
-roles/aiplatform.user
-roles/datastore.user
-roles/serviceusage.serviceUsageConsumer
-```
-
-Codex 沒有把舊 service account 擴權後共用，而是讓新服務的身分與權限可以獨立追蹤。
+這個鎖保護的不只是畫面，也保護模型成本。
 
 ---
 
-## 🔁 Codex 把 Webhook 切換寫成「成功才留下，失敗就回復」
+## 🧯 新增能力失敗，不該拖垮原本搜尋
 
-新 Cloud Run revision serving 100% traffic、`/health` 回傳正常，還不代表應該直接把正式 Bot 指過去。
+Codex 在設計 session 時，又多問了一個問題：
 
-Codex 在切換前先讀取目前 webhook endpoint，保留舊網址：
+> 如果 Firestore 暫時不能寫入，第一次咖啡廳搜尋還要不要回覆？
 
-```text
-https://line-map-grounding-.../webhook
-```
+答案是要。
 
-接著才將 LINE webhook 更新成新服務：
+第一次搜尋已經拿到結果後，程式才嘗試建立 session：
 
-```text
-https://codex-postback-action-.../webhook
-```
+- 建立成功：顯示「換一批」與「更適合工作」
+- 建立失敗：照常送出推薦，只保留「重新選位置」
 
-切換腳本緊接著呼叫 LINE 官方 webhook test。如果 `success` 不是 `true`，Codex 會在同一次流程裡把 endpoint 設回舊網址。
+用白話來說，續杯服務壞了，不代表第一杯咖啡也不能端上桌。
 
-概念上是：
-
-```typescript
-const oldEndpoint = await getCurrentWebhook();
-
-try {
-  await setWebhook(newEndpoint);
-  const result = await testWebhook(newEndpoint);
-
-  if (!result.success) {
-    await setWebhook(oldEndpoint);
-  }
-} catch {
-  await setWebhook(oldEndpoint);
-}
-```
-
-最後新服務得到：
-
-```text
-success: true
-statusCode: 200
-reason: OK
-```
-
-Codex 再確認 Cloud Run 沒有 error logs，才把這次切換視為完成。
-
-這和「部署指令顯示 Done」是不同層次的完成。真正重要的是，新入口可達，而且失敗時有已經確認過的回復位置。
+Codex 將 Postback 做成漸進式增強，而不是讓新的 Firestore 依賴成為舊功能的單點故障。
 
 ---
 
-## 🧹 TTL 建立比較慢，但不應阻擋功能上線
+## 🏆 第二篇總結：Bot 的記憶也需要邊界
 
-Firestore TTL 政策建立後，Google Cloud 需要一段時間在背景完成設定。
+Codex 最後做出的 session 有幾個清楚限制：
 
-Codex 查到 operation 狀態仍是：
+- 只保存下一步需要的資料
+- 只允許原使用者在原對話操作
+- 30 分鐘後由應用程式拒絕
+- 過期文件再交給 TTL 清除
+- 用 transaction 防止連點
+- Firestore 失敗時不影響第一次搜尋
 
-```text
-PROCESSING
-```
+這些限制讓「記得上一輪」不會變成「什麼都永久保存」。
 
-這時不需要把整個 Bot 回復到舊版。
+我原本只想要一顆「換一批」，Codex 卻讓我看到，真正成熟的狀態設計不是記得越多越好，而是只記得必要內容，而且知道何時失效。
 
-因為應用程式本身已經會用 `expiresAt` 拒絕超過 30 分鐘的 session。TTL 處理的是之後自動刪除文件，不是即時授權。
-
-Codex 將它判定為「背景清理尚在建立」，而不是「Postback 功能不可使用」。這正好呼應上一篇的責任分工：程式負責守門，TTL 負責打掃。
-
----
-
-## 🏆 第二篇總結：完成不是程式寫完，而是能安全替換線上入口
-
-今天 Codex 實作的不只是兩個 LINE 按鈕。
-
-它把 Postback 功能拆成一組可以驗證的邊界：
-
-- Event type 分流
-- 版本化 parser
-- Action 白名單
-- Firestore session claim
-- 上一批店家排除
-- 搜尋偏好延續
-- Quick Reply 組裝
-- 分類錯誤訊息
-- Firestore 失敗時的降級
-- Protocol 與訊息測試
-
-接著 Codex 又把上線變成一個可回復流程：新舊服務平行存在、先檢查新服務、保留舊 endpoint、切換後立即 Verify、失敗自動切回。
-
-這些步驟大多不會出現在使用者畫面上，但它們決定了一次新功能發布，是「希望它會成功」，還是「知道失敗時怎麼回來」。
-
-我今天最有感的一句話是：
-
-> Codex 寫 code 的速度很快，但真正讓我放心的，是它願意把 parser、fallback、測試與回復路徑一起做完。
-
-現在 Zona Cafe 不只會回答「附近有什麼」，也開始能記住一次搜尋，讓使用者沿著同一個情境繼續探索。
+下一篇會進入程式實作：Postback handler 如何接進既有事件流程、怎麼真的排除上一批店家，以及 Codex 把哪些部分放進測試。
 
 ---
 
 ### 📂 本篇完整程式碼
 
-👉 Postback Action 專案：
 https://github.com/zonawang/codex-postback-action
-
-👉 第一篇：LINE Bot 的「換一批」為什麼需要資料庫？
-https://github.com/zonawang/codex-postback-action/blob/main/medium-postback-part1.md
-
-👉 更多過往專案整理：
-https://github.com/zonawang/zona-ai-learning-lab
