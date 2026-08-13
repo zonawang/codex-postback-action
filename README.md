@@ -129,6 +129,10 @@ gcloud projects add-iam-policy-binding line-zona \
 gcloud projects add-iam-policy-binding line-zona \
   --member="serviceAccount:codex-postback-action@line-zona.iam.gserviceaccount.com" \
   --role="roles/datastore.user"
+
+gcloud projects add-iam-policy-binding line-zona \
+  --member="serviceAccount:codex-postback-action@line-zona.iam.gserviceaccount.com" \
+  --role="roles/serviceusage.serviceUsageConsumer"
 ```
 
 部署：
